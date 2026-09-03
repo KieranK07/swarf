@@ -157,6 +157,15 @@ fn attempt_fall(i: u32, j: u32) {
     swap_cells(i, j);
 }
 
+// Straight-down fall, gated on the material's mobility so a falling mass does
+// not descend in lockstep. See `Material::mobility`.
+fn attempt_drop(i: u32, j: u32) {
+    if (lock[i] || lock[j]) { return; }
+    if (!can_sink(blk[i], blk[j])) { return; }
+    if (rand_f32(next_rand()) >= materials[cell_mat(blk[i])].mobility) { return; }
+    swap_cells(i, j);
+}
+
 // Is this cell being shoved from behind by more of the same fluid?
 //
 // Weight from above alone is not enough to make water level. A wedge of water
@@ -269,8 +278,8 @@ fn simulate_block(origin: vec2<i32>) {
     rng = hash2(u32(origin.x), u32(origin.y), params.tick);
 
     // 1. Straight down. Both columns fall independently.
-    attempt_fall(0u, 2u);
-    attempt_fall(1u, 3u);
+    attempt_drop(0u, 2u);
+    attempt_drop(1u, 3u);
 
     // 2. Diagonal slump. A grain only reaches here if the cell directly below
     //    it was blocked (otherwise step 1 locked it), which is exactly when a

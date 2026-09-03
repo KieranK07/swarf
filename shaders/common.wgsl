@@ -54,7 +54,7 @@ struct Material {
     density: f32,
     kind: u32,
     variance: f32,       // how much per-cell colour noise to apply
-    _pad: f32,
+    mobility: f32,       // chance per tick of taking the gravity step
 }
 
 // --- hashing ---------------------------------------------------------------
