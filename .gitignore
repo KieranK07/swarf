@@ -1,1 +1,7 @@
 /target
+
+# headless capture output
+/*.png
+/shots/
+
+.DS_Store

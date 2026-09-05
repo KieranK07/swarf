@@ -1,26 +1,21 @@
 # swarf
 
 A granular-material sandbox: every pixel is a cell of real material with a
-density and a temperature, falling, flowing and piling under its own rules.
+density, falling, flowing and piling under its own rules. 4096x2048 cells,
+simulated entirely on the GPU at 240 Hz.
+
+Rust + wgpu, 2D. Written and measured on Apple Silicon (Metal).
+
+## Why it exists
+
 The intended destination is a factory game where machines crush, melt and cast
-actual material rather than incrementing a counter.
-
-Rust + wgpu (Metal), simulation on the GPU, 2D.
-
-```
-cargo run --release
-```
-
-| | |
-|---|---|
-| LMB / RMB | paint / erase |
-| MMB or space + drag | pan |
-| scroll | zoom at cursor |
-| `1`-`0` | material hotbar |
-| `Q` / `E` | cycle all materials |
-| `[` / `]` | brush size |
-| `P` / `N` | pause / single step |
-| `R` | regenerate world |
+actual material rather than incrementing a counter, and that only works if the
+physics conserves mass *exactly*. A throughput number is worth showing to a
+player only if it came from grains that were moved, never from grains that were
+invented or quietly lost — and the usual falling-sand rule ("look at the cell
+below, move into it if it's empty") loses that guarantee the moment two grains
+want the same destination and you have to arbitrate between them. So the whole
+thing is built on a scheme where that collision cannot happen in the first place.
 
 ## How it works
 
@@ -36,20 +31,23 @@ them. This buys three things:
 - **No write conflicts**, so no atomics and no arbitration pass. Two grains can
   never both claim one destination, because destinations never span two threads.
 - **Exact mass conservation.** Cells are permuted, never created or destroyed.
-  For a factory game that is not a nicety — it is the difference between a
-  throughput number you can trust and one that quietly drifts.
 - **A uniform GPU workload**, every thread doing identical work.
 
 The cost is that a block only sees itself, so material moves at most one cell
 per tick. The partition origin shifts every tick to hide the seam; the y
-component *must* flip every tick, or everything falls at half speed.
+component *must* flip every tick, or everything falls at half speed — a cell can
+only fall when it sits in the top row of its block, so a y that holds still for
+two ticks strands it in a bottom row for one of them.
 
 Because one cell per tick is the hard ceiling on every transport rate, the
-simulation runs at **240 Hz**, decoupled from the display.
+simulation runs at **240 Hz**, decoupled from the display. A 120 Hz screen
+renders twice per tick rather than simulating twice as fast.
 
 **Chunk sleeping is what makes that affordable.** A 32x32 chunk whose contents
 have stopped moving is not dispatched at all, and almost all of a mature world
-is settled at any moment. On a 4096x2048 world:
+is settled at any moment. A chunk that moves anything wakes itself and its eight
+neighbours for the next tick, because a 2x2 block straddles the chunk edge on
+odd partition phases. Measured on an M4, 4096x2048:
 
 | | ms per tick |
 |---|---|
@@ -64,34 +62,68 @@ shader reads. Zero copies per frame.
 ## Rules worth knowing
 
 Movement is driven by density alone: denser sinks. Gases need no special case —
-steam is lighter than air, so it "sinks" upward for free.
+steam is lighter than air, so it "sinks" upward for free. Sand heaps at 45
+degrees, the theoretical maximum for a 2x2 stencil.
 
-Two rules took real work to get right, and both are easy to get subtly wrong:
+Three details took real work to get right, and each is easy to get subtly wrong:
 
-- **Sand heaps at 45 degrees**, the theoretical maximum for a 2x2 stencil.
 - **Water needs pressure from above *and* from behind.** Weight alone is not
   enough: the cells free to move sideways are exactly the ones with nothing on
-  top of them, so water settles into a stable 26-degree wedge and never levels.
-  One cell of look-behind fixes it, and keeps isolated droplets from wandering
-  the floor forever holding their chunk awake.
+  top of them, so water settles into a stable wedge and never levels. One cell
+  of look-behind fixes it, and keeps isolated droplets from wandering the floor
+  forever holding their chunk awake.
+- **The pressure test has to include the diagonals.** Check only straight up and
+  a heap of water is stable by exactly one cell: every surface cell has air
+  directly above it, so the mound sits there as a dome. Its outermost cells do
+  have fluid diagonally above, which is precisely the weight that ought to be
+  pushing them out.
 - **Mobility below 1.0.** With every cell trying to fall on the same tick, only
   the bottom of a falling mass can move, so a gap walks up it in lockstep and it
   descends as a barcode of alternating full and empty rows. The dilation is real;
-  the regularity is not.
+  the regularity is not. A per-material chance of taking the gravity step breaks
+  the lockstep, and doubles as a viscosity knob — lava oozes, water runs.
+
+Neighbour reads inside the sim shader are racy on purpose: another workgroup may
+be mid-write, so you get either the pre- or post-tick value. That is fine,
+because those reads only ever feed a *decision* (is this cell under pressure?),
+never a write. Worst case a drop of water spreads one tick early.
+
+## Running it
+
+```
+cargo run --release
+```
+
+Needs a GPU that wgpu can reach. Developed against Metal on Apple Silicon; the
+Vulkan and DX12 backends should work but I haven't run them.
+
+| | |
+|---|---|
+| LMB / RMB | paint / erase |
+| MMB, or space + drag | pan |
+| WASD or arrow keys | pan |
+| scroll | zoom at cursor |
+| `1`-`0` | material hotbar |
+| `Q` / `E` | cycle all materials |
+| `[` / `]` | brush size |
+| `P` / `N` | pause / single step |
+| `R` | regenerate world |
+| `Esc` | quit |
 
 ## Developing
 
-The physics is tuned by *looking* at it, so there is a headless renderer:
+The physics is tuned by *looking* at it, so there is a headless renderer that
+runs N ticks and writes a PNG:
 
 ```
-swarf --shot out.png --scene lab --ticks 6000 --zoom 1 \
-      --centre 2100,1090 --drop sand@2100,850,60
+cargo run --release -- --shot out.png --scene lab --ticks 6000 --zoom 1 \
+    --centre 2100,1090 --drop sand@2100,850,60
 ```
 
 `--scene lab` is a bare rig — flat floor, a step, a sealed vessel — because
 terrain noise makes it impossible to tell a rule bug from a lumpy cave. A heap
-should hold a stable angle; a vessel should end up level. `swarf --help` lists
-the rest.
+should hold a stable angle; a vessel should end up level. Same seed and same
+ticks give the same image, so rule changes are diffable. `--help` lists the rest.
 
 ## Layout
 
@@ -104,7 +136,30 @@ shaders/render.wgsl   fullscreen triangle, palette, brush ring
 src/materials.rs      the material table — behaviour is data, not code
 src/world.rs          cell packing and terrain generation
 src/sim.rs            buffers, compute pipelines, the tick
+src/shot.rs           headless capture
 ```
 
 Adding a material is a row in `MATERIALS`. Nothing in the shaders knows any
 material by name.
+
+## Status
+
+The material layer works and is the whole of what exists. Sixteen materials,
+terrain generation, painting, chunk sleeping and headless capture all run end to
+end on my machine. What it does not do yet:
+
+- **Temperature is stored but inert.** Every cell carries 16 bits of Kelvin and
+  lava is painted at 1500 K, but nothing reads it. No heat transfer, no melting,
+  no phase change — molten iron and lava are currently just dense fluids with an
+  emissive colour.
+- **No machines.** None of the factory-game part is built; this is the substrate
+  it would sit on.
+- **No tests.** The rules are judged by eye against the `lab` scene rather than
+  asserted, so a regression can only be caught by looking. `cargo test` builds
+  and passes with zero tests.
+- Fixed world size, no save/load, and no way to add a material without a
+  recompile.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
