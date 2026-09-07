@@ -6,6 +6,12 @@ simulated entirely on the GPU at 240 Hz.
 
 Rust + wgpu, 2D. Written and measured on Apple Silicon (Metal).
 
+![Water settled in a sealed vessel, sand heaped at its angle of repose over a step, and lava pooling past it, in the lab scene](docs/img/lab-materials.png)
+
+![Close-up of a sand pile settled at its 45-degree angle of repose, spilling over the edge of a stone step](docs/img/sand-pile.png)
+
+![Procedurally generated terrain: rolling hills, a sandy beach line, and flooded caves and ore veins in cross-section](docs/img/terrain.png)
+
 ## Why it exists
 
 The intended destination is a factory game where machines crush, melt and cast
