@@ -1,12 +1,14 @@
 # swarf
 
+![Sand poured into a pool of water sinks through it and heaps on the floor while a second pool of water spreads across a stone step](docs/img/pour.gif)
+
 A granular-material sandbox: every pixel is a cell of real material with a
 density, falling, flowing and piling under its own rules. 4096x2048 cells,
 simulated entirely on the GPU at 240 Hz.
 
 Rust + wgpu, 2D. Written and measured on Apple Silicon (Metal).
 
-![Water settled in a sealed vessel, sand heaped at its angle of repose over a step, and lava pooling past it, in the lab scene](docs/img/lab-materials.png)
+![The lab scene after 800,000 ticks: water with a layer of oil on top, level in a sealed vessel; sand heaped at 45 degrees against a stone step; lava spread flat past it](docs/img/lab-materials.png)
 
 ![Close-up of a sand pile settled at its 45-degree angle of repose, spilling over the edge of a stone step](docs/img/sand-pile.png)
 
@@ -14,19 +16,16 @@ Rust + wgpu, 2D. Written and measured on Apple Silicon (Metal).
 
 ## Why it exists
 
-The intended destination is a factory game where machines crush, melt and cast
-actual material rather than incrementing a counter, and that only works if the
-physics conserves mass *exactly*. A throughput number is worth showing to a
-player only if it came from grains that were moved, never from grains that were
-invented or quietly lost — and the usual falling-sand rule ("look at the cell
-below, move into it if it's empty") loses that guarantee the moment two grains
-want the same destination and you have to arbitrate between them. So the whole
-thing is built on a scheme where that collision cannot happen in the first place.
+It is the substrate for a factory game where machines crush, melt and cast
+actual material. That only works if the physics conserves mass exactly, and the
+usual falling-sand rule ("move into the cell below if it's empty") loses that the
+moment two grains want the same destination. This one is built so that
+collision cannot happen.
 
 ## How it works
 
-The world is 4096x2048 cells. One cell is one `u32` — material id, a colour
-variant, and a temperature in Kelvin — so the whole world is 32 MB and lives in
+The world is 4096x2048 cells. One cell is one `u32` (material id, a colour
+variant, and a temperature in Kelvin), so the whole world is 32 MB and lives in
 a single storage buffer.
 
 **The simulation is a Margolus block cellular automaton.** The grid is carved
@@ -41,7 +40,7 @@ them. This buys three things:
 
 The cost is that a block only sees itself, so material moves at most one cell
 per tick. The partition origin shifts every tick to hide the seam; the y
-component *must* flip every tick, or everything falls at half speed — a cell can
+component *must* flip every tick, or everything falls at half speed: a cell can
 only fall when it sits in the top row of its block, so a y that holds still for
 two ticks strands it in a bottom row for one of them.
 
@@ -52,8 +51,9 @@ renders twice per tick rather than simulating twice as fast.
 **Chunk sleeping is what makes that affordable.** A 32x32 chunk whose contents
 have stopped moving is not dispatched at all, and almost all of a mature world
 is settled at any moment. A chunk that moves anything wakes itself and its eight
-neighbours for the next tick, because a 2x2 block straddles the chunk edge on
-odd partition phases. Measured on an M4, 4096x2048:
+neighbours for the next four ticks: its neighbours because a 2x2 block straddles
+the chunk edge on odd partition phases, and four ticks because some moves are
+only possible on one of the four phases. Measured on an M4, 4096x2048:
 
 | | ms per tick |
 |---|---|
@@ -61,13 +61,13 @@ odd partition phases. Measured on an M4, 4096x2048:
 | with chunk sleeping, settled | 0.11 |
 
 Rendering is one fullscreen triangle whose fragment shader samples the cell
-buffer directly — no intermediate texture and no upload, because on unified
+buffer directly, with no intermediate texture and no upload, because on unified
 memory the buffer the compute pass just wrote is already where the fragment
 shader reads. Zero copies per frame.
 
 ## Rules worth knowing
 
-Movement is driven by density alone: denser sinks. Gases need no special case —
+Movement is driven by density alone: denser sinks. Gases need no special case:
 steam is lighter than air, so it "sinks" upward for free. Sand heaps at 45
 degrees, the theoretical maximum for a 2x2 stencil.
 
@@ -87,7 +87,7 @@ Three details took real work to get right, and each is easy to get subtly wrong:
   the bottom of a falling mass can move, so a gap walks up it in lockstep and it
   descends as a barcode of alternating full and empty rows. The dilation is real;
   the regularity is not. A per-material chance of taking the gravity step breaks
-  the lockstep, and doubles as a viscosity knob — lava oozes, water runs.
+  the lockstep, and doubles as a viscosity knob: lava oozes, water runs.
 
 Neighbour reads inside the sim shader are racy on purpose: another workgroup may
 be mid-write, so you get either the pre- or post-tick value. That is fine,
@@ -119,17 +119,30 @@ Vulkan and DX12 backends should work but are untested.
 ## Developing
 
 The physics is tuned by *looking* at it, so there is a headless renderer that
-runs N ticks and writes a PNG:
+runs N ticks and writes a PNG (add `--every K` for a numbered frame every K
+ticks; `docs/make-gif.sh` builds the GIF above that way):
 
 ```
 cargo run --release -- --shot out.png --scene lab --ticks 6000 --zoom 1 \
     --centre 2100,1090 --drop sand@2100,850,60
 ```
 
-`--scene lab` is a bare rig — flat floor, a step, a sealed vessel — because
+`--scene lab` is a bare rig (flat floor, a step, a sealed vessel) because
 terrain noise makes it impossible to tell a rule bug from a lumpy cave. A heap
-should hold a stable angle; a vessel should end up level. Same seed and same
-ticks give the same image, so rule changes are diffable. `--help` lists the rest.
+should hold a stable angle; a vessel should end up level, though levelling is
+diffusive and an 800-cell-wide vessel takes a few hundred thousand ticks. Output
+is close to, but not bit-for-bit, repeatable: the racy neighbour reads above
+mean two runs of the same seed differ in a few percent of grains. `--help` lists
+the rest.
+
+```
+cargo test --release
+```
+
+runs three headless GPU tests against the `lab` scene: every material's cell
+count is unchanged after 4000 ticks of mixing, water in a basin settles with
+its surface within one cell, and a sand heap is nowhere steeper than 45 degrees.
+They take about 30 s and need the same GPU access as `--shot`.
 
 ## Layout
 
@@ -139,10 +152,12 @@ shaders/sim.wgsl      the block automaton and chunk sleeping
 shaders/chunks.wgsl   advances wake state between ticks
 shaders/paint.wgsl    brush strokes, stamped as swept capsules
 shaders/render.wgsl   fullscreen triangle, palette, brush ring
-src/materials.rs      the material table — behaviour is data, not code
+src/materials.rs      the material table; behaviour is data, not code
 src/world.rs          cell packing and terrain generation
 src/sim.rs            buffers, compute pipelines, the tick
 src/shot.rs           headless capture
+src/tests.rs          headless physics tests
+docs/make-gif.sh      rebuilds docs/img/pour.gif
 ```
 
 Adding a material is a row in `MATERIALS`. Nothing in the shaders knows any
@@ -151,21 +166,18 @@ material by name.
 ## Status
 
 The material layer works and is the whole of what exists. Sixteen materials,
-terrain generation, painting, chunk sleeping and headless capture all run end to
-end on an M4 Mac. What it does not do yet:
+terrain generation, painting, chunk sleeping, headless capture and the physics
+tests all run end to end on an M4 Mac. What it does not do yet:
 
 - **Temperature is stored but inert.** Every cell carries 16 bits of Kelvin and
   lava is painted at 1500 K, but nothing reads it. No heat transfer, no melting,
-  no phase change — molten iron and lava are currently just dense fluids with an
+  no phase change: molten iron and lava are currently just dense fluids with an
   emissive colour.
 - **No machines.** None of the factory-game part is built; this is the substrate
   it would sit on.
-- **No tests.** The rules are judged by eye against the `lab` scene rather than
-  asserted, so a regression can only be caught by looking. `cargo test` builds
-  and passes with zero tests.
 - Fixed world size, no save/load, and no way to add a material without a
   recompile.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
