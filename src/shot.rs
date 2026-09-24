@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::camera::Camera;
 use crate::gpu::Gpu;
 use crate::render::Renderer;
-use crate::sim::{self, Sim, Stroke};
+use crate::sim::{Sim, Stroke};
 
 pub struct ShotOptions {
     pub width: u32,
@@ -23,6 +23,18 @@ pub struct ShotOptions {
     pub strokes: Vec<Stroke>,
     pub out: String,
     pub scene: crate::world::Scene,
+    /// Also write a frame every this many ticks, numbered into the file name.
+    pub every: Option<u32>,
+}
+
+/// `out.png` -> `out-0007.png`.
+fn frame_path(out: &str, frame: u32) -> String {
+    let path = Path::new(out);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("shot");
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("png");
+    path.with_file_name(format!("{stem}-{frame:04}.{ext}"))
+        .to_string_lossy()
+        .into_owned()
 }
 
 pub fn capture(opts: ShotOptions) {
@@ -64,88 +76,84 @@ pub fn capture(opts: ShotOptions) {
     });
 
     // Apply the requested strokes before simulating, so they have time to fall.
-    if !opts.strokes.is_empty() {
+    sim.paint_all(&gpu, &opts.strokes);
+
+    let draw = |out: &str| {
         let mut encoder = gpu
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shot paint") });
-        for stroke in &opts.strokes {
-            sim.paint(&gpu.queue, &mut encoder, stroke);
-            // One submit per stroke: the strokes share a uniform buffer, and
-            // `write_buffer` is ordered against submission, not against passes.
-            gpu.queue.submit([encoder.finish()]);
-            encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("shot paint"),
-            });
-        }
-        gpu.queue.submit([encoder.finish()]);
-    }
-
-    let mut remaining = opts.ticks as usize;
-    while remaining > 0 {
-        let batch = remaining.min(sim::MAX_TICKS_PER_FRAME);
-        sim.prepare(&gpu.queue, batch);
-        let mut encoder = gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shot sim") });
-        for slot in 0..batch {
-            sim.encode_tick(&mut encoder, slot);
-        }
-        gpu.queue.submit([encoder.finish()]);
-        sim.tick = sim.tick.wrapping_add(batch as u32);
-        remaining -= batch;
-    }
-
-    let mut encoder = gpu
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shot draw") });
-    renderer.draw(&gpu, &mut encoder, &view, &camera, [0.0, 0.0], 0.0, false);
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: &target,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded),
-                rows_per_image: Some(opts.height),
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shot draw") });
+        renderer.draw(&gpu, &mut encoder, &view, &camera, [0.0, 0.0], 0.0, false);
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
             },
-        },
-        wgpu::Extent3d {
-            width: opts.width,
-            height: opts.height,
-            depth_or_array_layers: 1,
-        },
-    );
-    gpu.queue.submit([encoder.finish()]);
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(opts.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: opts.width,
+                height: opts.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit([encoder.finish()]);
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    readback.map_async(wgpu::MapMode::Read, .., move |r| {
-        let _ = tx.send(r);
-    });
-    gpu.device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("device poll failed");
-    rx.recv().expect("map channel closed").expect("buffer map failed");
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback.map_async(wgpu::MapMode::Read, .., move |r| {
+            let _ = tx.send(r);
+        });
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("device poll failed");
+        rx.recv().expect("map channel closed").expect("buffer map failed");
 
-    let mapped = readback
-        .slice(..)
-        .get_mapped_range()
-        .expect("failed to read back mapped buffer");
-    let mut pixels = Vec::with_capacity((unpadded * opts.height) as usize);
-    for row in 0..opts.height {
-        let start = (row * padded) as usize;
-        pixels.extend_from_slice(&mapped[start..start + unpadded as usize]);
+        let mapped = readback
+            .slice(..)
+            .get_mapped_range()
+            .expect("failed to read back mapped buffer");
+        let mut pixels = Vec::with_capacity((unpadded * opts.height) as usize);
+        for row in 0..opts.height {
+            let start = (row * padded) as usize;
+            pixels.extend_from_slice(&mapped[start..start + unpadded as usize]);
+        }
+        drop(mapped);
+        readback.unmap();
+
+        write_png(Path::new(out), opts.width, opts.height, &pixels);
+    };
+
+    match opts.every {
+        // One continuous run, so consecutive frames show the same grains
+        // moving rather than independent runs that each diverge slightly.
+        Some(every) => {
+            let every = every.max(1);
+            let mut frame = 0;
+            loop {
+                draw(&frame_path(&opts.out, frame));
+                frame += 1;
+                if sim.tick >= opts.ticks {
+                    break;
+                }
+                sim.run(&gpu, every.min(opts.ticks - sim.tick));
+            }
+            print!("wrote {frame} frames of ");
+        }
+        None => {
+            sim.run(&gpu, opts.ticks);
+            draw(&opts.out);
+            print!("wrote ");
+        }
     }
-    drop(mapped);
-    readback.unmap();
-
-    write_png(Path::new(&opts.out), opts.width, opts.height, &pixels);
     println!(
-        "wrote {} ({}x{}, {} ticks) in {:.0} ms",
+        "{} ({}x{}, {} ticks) in {:.0} ms",
         opts.out,
         opts.width,
         opts.height,

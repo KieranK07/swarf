@@ -396,6 +396,7 @@ shot options:
   --seed S           world seed                          (default random)
   --scene NAME       terrain | lab (bare rig for judging physics)
   --drop MAT@X,Y,R   stamp a disc of material MAT before simulating (repeatable)
+  --every K          also write a frame every K ticks, as FILE-0000.png, FILE-0001.png, ...
 ";
 
 /// Minimal flag parsing. A CLI arg crate would be a dependency earning its keep
@@ -419,6 +420,7 @@ fn parse_shot(args: &[String]) -> Option<shot::ShotOptions> {
         strokes: Vec::new(),
         out: "shot.png".into(),
         scene: world::Scene::Terrain,
+        every: None,
     };
 
     /// Consume the value that follows a flag.
@@ -440,6 +442,7 @@ fn parse_shot(args: &[String]) -> Option<shot::ShotOptions> {
             "--shot" => opts.out = value!(),
             "--ticks" => opts.ticks = value!().parse().expect("--ticks expects an integer"),
             "--zoom" => opts.zoom = value!().parse().expect("--zoom expects a number"),
+            "--every" => opts.every = Some(value!().parse().expect("--every expects an integer")),
             "--seed" => opts.seed = value!().parse().expect("--seed expects an integer"),
             "--scene" => {
                 opts.scene = match value!().as_str() {

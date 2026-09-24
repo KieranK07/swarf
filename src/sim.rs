@@ -108,7 +108,9 @@ impl Sim {
         let cells = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("cells"),
             contents: bytemuck::cast_slice(&initial),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
         });
 
         let table = materials::upload_table();
@@ -359,6 +361,68 @@ impl Sim {
         pass.set_pipeline(&self.paint_pipeline);
         pass.set_bind_group(0, &self.paint_bind, &[]);
         pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+    }
+
+    /// Stamp a list of strokes, one submit each: the strokes share a uniform
+    /// buffer, and `write_buffer` is ordered against submission, not passes.
+    pub fn paint_all(&self, gpu: &Gpu, strokes: &[Stroke]) {
+        for stroke in strokes {
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("paint") });
+            self.paint(&gpu.queue, &mut encoder, stroke);
+            gpu.queue.submit([encoder.finish()]);
+        }
+    }
+
+    /// Run `ticks` ticks back to back, in batches of [`MAX_TICKS_PER_FRAME`].
+    pub fn run(&mut self, gpu: &Gpu, ticks: u32) {
+        let mut remaining = ticks as usize;
+        while remaining > 0 {
+            let batch = remaining.min(MAX_TICKS_PER_FRAME);
+            self.prepare(&gpu.queue, batch);
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("run") });
+            for slot in 0..batch {
+                self.encode_tick(&mut encoder, slot);
+            }
+            gpu.queue.submit([encoder.finish()]);
+            self.tick = self.tick.wrapping_add(batch as u32);
+            remaining -= batch;
+        }
+    }
+
+    /// Copy the whole cell buffer back to the CPU. Blocks until the GPU is done.
+    #[cfg(test)]
+    pub fn read_cells(&self, gpu: &Gpu) -> Vec<u32> {
+        let size = (world::CELL_COUNT * 4) as u64;
+        let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cells readback"),
+            size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readback") });
+        encoder.copy_buffer_to_buffer(&self.cells, 0, &readback, 0, size);
+        gpu.queue.submit([encoder.finish()]);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback.map_async(wgpu::MapMode::Read, .., move |r| {
+            let _ = tx.send(r);
+        });
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("device poll failed");
+        rx.recv().expect("map channel closed").expect("buffer map failed");
+        let cells = bytemuck::cast_slice(
+            &readback.slice(..).get_mapped_range().expect("failed to read mapped buffer"),
+        )
+        .to_vec();
+        readback.unmap();
+        cells
     }
 
     pub fn reset(&mut self, queue: &wgpu::Queue, seed: u32, scene: world::Scene) {
