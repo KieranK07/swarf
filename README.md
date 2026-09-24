@@ -101,7 +101,7 @@ cargo run --release
 ```
 
 Needs a GPU that wgpu can reach. Developed against Metal on Apple Silicon; the
-Vulkan and DX12 backends should work but I haven't run them.
+Vulkan and DX12 backends should work but are untested.
 
 | | |
 |---|---|
@@ -152,7 +152,7 @@ material by name.
 
 The material layer works and is the whole of what exists. Sixteen materials,
 terrain generation, painting, chunk sleeping and headless capture all run end to
-end on my machine. What it does not do yet:
+end on an M4 Mac. What it does not do yet:
 
 - **Temperature is stored but inert.** Every cell carries 16 bits of Kelvin and
   lava is painted at 1500 K, but nothing reads it. No heat transfer, no melting,
