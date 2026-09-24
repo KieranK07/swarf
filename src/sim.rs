@@ -29,7 +29,7 @@ pub const MAX_TICKS_PER_FRAME: usize = 12;
 
 /// Wake bits, mirroring `WAKE_NOW` / `WAKE_NEXT` in `shaders/common.wgsl`.
 const WAKE_NOW: u32 = 1;
-const WAKE_NEXT: u32 = 2;
+const WAKE_NEXT: u32 = 0x1E;
 
 /// Dynamic uniform offsets must be a multiple of
 /// `min_uniform_buffer_offset_alignment`, which is 256 in the default limits.

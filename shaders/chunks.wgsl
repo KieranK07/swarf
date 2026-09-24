@@ -24,7 +24,7 @@ struct ChunkParams {
 fn rotate_wake(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= params.chunk_count) { return; }
-    // Shift WAKE_NEXT down into WAKE_NOW and clear the next-tick bit, so a
-    // chunk stays awake only while something keeps asking for it.
-    wake[i] = (wake[i] >> 1u) & WAKE_NOW;
+    // Shift the pending ticks down by one, so a chunk stays awake only while
+    // something keeps asking for it. See WAKE_NEXT in common.wgsl.
+    wake[i] = wake[i] >> 1u;
 }

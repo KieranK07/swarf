@@ -159,10 +159,17 @@ fn attempt_fall(i: u32, j: u32) {
 
 // Straight-down fall, gated on the material's mobility so a falling mass does
 // not descend in lockstep. See `Material::mobility`.
+//
+// A cell that loses the roll has not moved, but it still wants to, so it keeps
+// the chunk awake. Otherwise a lone grain that loses a few rolls in a row lets
+// its chunk fall asleep under it and hangs in mid-air.
 fn attempt_drop(i: u32, j: u32) {
     if (lock[i] || lock[j]) { return; }
     if (!can_sink(blk[i], blk[j])) { return; }
-    if (rand_f32(next_rand()) >= materials[cell_mat(blk[i])].mobility) { return; }
+    if (rand_f32(next_rand()) >= materials[cell_mat(blk[i])].mobility) {
+        atomicStore(&wg_moved, 1u);
+        return;
+    }
     swap_cells(i, j);
 }
 

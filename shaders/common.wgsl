@@ -42,12 +42,18 @@ const MAT_AIR: u32 = 0u;
 const CHUNK: u32 = 32u;
 
 // Per-chunk wake bits.
-//   bit 0  simulate this chunk this tick
-//   bit 1  simulate it next tick
-// `rotate_wake` shifts bit 1 down into bit 0 between ticks, so a chunk stays
-// awake exactly as long as something keeps happening in it.
+//   bit 0     simulate this chunk this tick
+//   bits 1-4  simulate it on each of the next four ticks
+// `rotate_wake` shifts everything down one bit between ticks, so a chunk stays
+// awake for four ticks after the last thing that happened in it.
+//
+// Four, not one, because the Margolus partition cycles through four phases. A
+// cell that can only move on one phase (a grain whose slump partner sits in the
+// other block half, a toe of water whose flow partner does) sees three ticks in
+// a row where nothing in its chunk moves. With one tick of grace the chunk
+// falls asleep in that gap and the cell is stranded mid-slope for good.
 const WAKE_NOW: u32 = 1u;
-const WAKE_NEXT: u32 = 2u;
+const WAKE_NEXT: u32 = 0x1Eu;
 
 struct Material {
     colour: vec4<f32>,   // rgb + emissive strength
